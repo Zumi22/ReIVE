@@ -76,7 +76,10 @@ def get_secret(key: str, default: Optional[str] = None) -> Optional[str]:
 
 SUPABASE_URL: Optional[str] = get_secret("SUPABASE_URL")
 SUPABASE_ANON_KEY: Optional[str] = get_secret("SUPABASE_ANON_KEY")
-GEMINI_API_KEY: Optional[str] = get_secret("GEMINI_API_KEY") or get_secret("OPENAI_API_KEY")
+GEMINI_API_KEY: Optional[str] = get_secret("GEMINI_API_KEY")
+OPENAI_API_KEY: Optional[str] = get_secret("OPENAI_API_KEY") or get_secret("CODECRAFT_API_KEY")
+OPENAI_BASE_URL: str = get_secret("OPENAI_BASE_URL") or get_secret("CODECRAFT_BASE_URL") or "https://api.openai.com/v1"
+LLM_MODEL: str = get_secret("LLM_MODEL") or get_secret("OPENAI_MODEL") or "gpt-4o-mini"
 OPENFDA_API_KEY: Optional[str] = get_secret("OPENFDA_API_KEY")
 
 # ==============================================================================
@@ -857,10 +860,6 @@ class LLMEngine:
         tech_clean = sanitize_user_input(tech_type, MAX_FIELD_LENGTH)
         combined_text = f"Device Description: {desc_clean}\nIntended Use: {use_clean}\nTechnology: {tech_clean}".strip()
         
-        if not GEMINI_API_KEY:
-            return cls._heuristic_concept_extraction(combined_text)
-        
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
         system_instruction = (
             "You are a strict regulatory engineering assistant for FDA medical device submissions. "
             "Extract structured device characteristics from the provided medical device data. "
@@ -871,21 +870,52 @@ class LLMEngine:
             '{"device_type": "...", "primary_function": "...", "intended_use": "...", '
             '"technology": "...", "anatomical_target": "...", "use_environment": "..."}'
         )
-        payload = {
-            "contents": [{"parts": [{"text": f"{system_instruction}\n\n<user_data>\n{combined_text}\n</user_data>"}]}],
-            "generationConfig": {"temperature": 0.1, "responseMimeType": "application/json"}
-        }
+
+        # 1. Try Google Gemini API if GEMINI_API_KEY is configured
+        if GEMINI_API_KEY:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+            payload = {
+                "contents": [{"parts": [{"text": f"{system_instruction}\n\n<user_data>\n{combined_text}\n</user_data>"}]}],
+                "generationConfig": {"temperature": 0.1, "responseMimeType": "application/json"}
+            }
+            try:
+                with httpx.Client(timeout=10.0) as client:
+                    resp = client.post(url, json=payload)
+                    if resp.status_code == 200:
+                        json_text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+                        data = json.loads(json_text)
+                        return DeviceConceptProfile(**data)
+            except Exception:
+                pass
+
+        # 2. Try OpenAI / CodeCraft API if OPENAI_API_KEY / CODECRAFT_API_KEY is configured
+        if OPENAI_API_KEY:
+            base_url = OPENAI_BASE_URL.rstrip("/")
+            url = f"{base_url}/chat/completions"
+            headers = {
+                "Authorization": f"Bearer {OPENAI_API_KEY}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "model": LLM_MODEL,
+                "messages": [
+                    {"role": "system", "content": system_instruction},
+                    {"role": "user", "content": f"<user_data>\n{combined_text}\n</user_data>"}
+                ],
+                "temperature": 0.1,
+                "response_format": {"type": "json_object"}
+            }
+            try:
+                with httpx.Client(timeout=10.0) as client:
+                    resp = client.post(url, json=payload, headers=headers)
+                    if resp.status_code == 200:
+                        content_str = resp.json()["choices"][0]["message"]["content"]
+                        data = json.loads(content_str)
+                        return DeviceConceptProfile(**data)
+            except Exception:
+                pass
         
-        try:
-            with httpx.Client(timeout=10.0) as client:
-                resp = client.post(url, json=payload)
-                if resp.status_code == 200:
-                    json_text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
-                    data = json.loads(json_text)
-                    return DeviceConceptProfile(**data)
-        except Exception:
-            pass
-        
+        # 3. Fallback: Deterministic heuristic extraction
         return cls._heuristic_concept_extraction(combined_text)
 
     @classmethod

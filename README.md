@@ -154,8 +154,7 @@ create policy "Users can delete own analyses"
 
 ## 5. Configuration & Secrets Setup
 
-ReIVE uses the **Supabase Public Anon Key** and **Gemini API Key**. Supabase administrative service keys are strictly forbidden and never used in frontend application code.
-
+ReIVE supports multiple AI providers (Google Gemini or any OpenAI-compatible provider such as CodeCraft) along with the Supabase Public Anon Key. Supabase administrative service keys are strictly forbidden and never used in frontend application code.
 
 ### Local Configuration (`.streamlit/secrets.toml`)
 Create a local `.streamlit/secrets.toml` file in your repository root (**never commit this file to Git**):
@@ -165,8 +164,13 @@ Create a local `.streamlit/secrets.toml` file in your repository root (**never c
 SUPABASE_URL = "https://your-project-id.supabase.co"
 SUPABASE_ANON_KEY = "your-supabase-anon-key"
 
-# AI / LLM Configuration (Google Gemini)
+# AI / LLM Configuration (Option A: Google Gemini)
 GEMINI_API_KEY = "your-gemini-api-key"
+
+# AI / LLM Configuration (Option B: CodeCraft / OpenAI-compatible API)
+CODECRAFT_API_KEY = "your-codecraft-or-openai-api-key"
+CODECRAFT_BASE_URL = "https://api.codecraft.com/v1"  # Or your provider's base URL
+LLM_MODEL = "gpt-4o-mini"                           # Or your provider's model name
 
 # openFDA API Key (Optional — increases limit to 120k requests/day)
 OPENFDA_API_KEY = "your-openfda-key"
@@ -217,8 +221,13 @@ python -m streamlit run app.py
    ```toml
    SUPABASE_URL = "https://your-project-id.supabase.co"
    SUPABASE_ANON_KEY = "your-supabase-anon-key"
-   GEMINI_API_KEY = "your-gemini-api-key"
-   OPENFDA_API_KEY = "your-openfda-key"
+
+   # Use either GEMINI_API_KEY or CODECRAFT_API_KEY (or OPENAI_API_KEY)
+   CODECRAFT_API_KEY = "your-codecraft-api-key"
+   CODECRAFT_BASE_URL = "https://api.codecraft.com/v1" # Or your provider endpoint
+   LLM_MODEL = "gpt-4o-mini"                           # Or your model
+
+   OPENFDA_API_KEY = "" # Optional
    ```
 7. Click **Save** and **Deploy!**
 
