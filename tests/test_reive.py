@@ -104,6 +104,53 @@ def test_semantic_matcher_ecg_ranking():
     assert ranked[0]["device_class"] == "2"
     assert ranked[0]["regulation_number"] == "870.2340"
 
+def test_benchmark_query_a_electrocardiogram_without_acronym():
+    """Case A: Description containing 'electrocardiogram' without explicit 'ECG' acronym must match DPS."""
+    query_a = "Portable electronic device that acquires electrical signals from electrodes placed on a patient's skin and displays or records a single-lead or multi-lead electrocardiogram."
+    status, matches = SemanticMatcher.match_product_codes(query_a, top_k=4)
+    assert status == "SUCCESS"
+    assert len(matches) > 0
+    assert matches[0]["product_code"] == "DPS"
+    assert matches[0]["device_class"] == "2"
+    assert matches[0]["regulation_number"] == "870.2340"
+    assert matches[0]["relevance_tier"] == "High relevance"
+
+def test_benchmark_query_b_electrocardiogram_with_acronym():
+    """Case B: Description containing 'ECG' and 'electrocardiogram' must match DPS."""
+    query_b = "Portable electronic device for ECG that acquires electrical signals from electrodes placed on a patient's skin and displays or records a single-lead or multi-lead electrocardiogram."
+    status, matches = SemanticMatcher.match_product_codes(query_b, top_k=4)
+    assert status == "SUCCESS"
+    assert len(matches) > 0
+    assert matches[0]["product_code"] == "DPS"
+    assert matches[0]["device_class"] == "2"
+    assert matches[0]["regulation_number"] == "870.2340"
+    assert matches[0]["relevance_tier"] == "High relevance"
+
+def test_benchmark_query_c_vein_visualization_matches_kza():
+    """Case C: Near-infrared vein visualization device must match KZA (21 CFR 880.6970, Class 1)."""
+    query_c = "Handheld battery-powered device that uses near-infrared light to visualize superficial veins beneath the skin and displays or projects the vein pattern on the skin surface."
+    status, matches = SemanticMatcher.match_product_codes(query_c, top_k=4)
+    assert status == "SUCCESS"
+    assert len(matches) > 0
+    assert matches[0]["product_code"] == "KZA"
+    assert matches[0]["device_class"] == "1"
+    assert matches[0]["regulation_number"] == "880.6970"
+    assert matches[0]["relevance_tier"] == "High relevance"
+
+def test_benchmark_query_d_vague_input_rejection():
+    """Case D: Vague ambiguous input must be rejected with TOO_VAGUE without fabricating product codes."""
+    query_d = "A small electronic device used in hospitals to monitor patients."
+    status, matches = SemanticMatcher.match_product_codes(query_d, top_k=4)
+    assert status == "TOO_VAGUE"
+    assert len(matches) == 0
+
+def test_benchmark_query_e_non_medical_input_rejection():
+    """Case E: Non-medical consumer product must be rejected with NON_MEDICAL."""
+    query_e = "A household LED desk lamp with adjustable brightness."
+    status, matches = SemanticMatcher.match_product_codes(query_e, top_k=4)
+    assert status == "NON_MEDICAL"
+    assert len(matches) == 0
+
 def test_semantic_matcher_radiology_ai():
     rad_query = "Radiological triage and notification software for intracranial hemorrhage detection"
     ranked = SemanticMatcher.rank_product_codes(rad_query, top_k=3)

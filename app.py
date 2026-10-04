@@ -579,19 +579,10 @@ def fetch_user_analyses() -> List[Dict[str, Any]]:
         return st.session_state.get("local_saved_analyses", [])
 
 # ==============================================================================
-# SECTION 4: CURATED STATIC FDA PRODUCT CLASSIFICATION CATALOG
+# SECTION 4: CURATED STATIC FDA PRODUCT CLASSIFICATION CATALOG & SYNONYMS
 # ==============================================================================
 
 CURATED_FDA_PRODUCT_CODES = [
-    {
-        "product_code": "DQA",
-        "device_name": "Oximeter",
-        "device_class": "2",
-        "regulation_number": "870.2700",
-        "medical_specialty": "Cardiovascular",
-        "definition": "A device used to transmit radiation at a known wavelength through blood and to measure the blood oxygen saturation based on the amount of light absorbed.",
-        "keywords": ["oximeter", "pulse oximeter", "spo2", "blood oxygen", "photoplethysmography", "ppg", "oxygen saturation", "hypoxia"]
-    },
     {
         "product_code": "DPS",
         "device_name": "Electrocardiograph",
@@ -599,7 +590,34 @@ CURATED_FDA_PRODUCT_CODES = [
         "regulation_number": "870.2340",
         "medical_specialty": "Cardiovascular",
         "definition": "An electrocardiograph is a device used to process the electrical signal transmitted through two or more electrocardiograph electrodes and to produce a visual display of the electrical signal produced by the heart.",
-        "keywords": ["ecg", "ekg", "electrocardiograph", "heart rate monitor", "cardiac rhythm", "arrhythmia", "lead ii", "qt interval"]
+        "keywords": ["ecg", "ekg", "electrocardiograph", "electrocardiogram", "electrocardiographic", "cardiac rhythm", "arrhythmia", "lead ii", "qt interval", "cardiac electrical", "skin electrodes", "cardiac monitor"]
+    },
+    {
+        "product_code": "MWJ",
+        "device_name": "Electrocardiograph, Ambulatory (Without Analysis)",
+        "device_class": "2",
+        "regulation_number": "870.2800",
+        "medical_specialty": "Cardiovascular",
+        "definition": "An ambulatory electrocardiograph is a device that is carried by a patient to record the electrical signal of the heart over an extended period.",
+        "keywords": ["holter", "ambulatory ecg", "event monitor", "cardiac telemetry", "wearable ecg", "ambulatory electrocardiograph"]
+    },
+    {
+        "product_code": "KZA",
+        "device_name": "Device, Vein Location, Liquid Crystal",
+        "device_class": "1",
+        "regulation_number": "880.6970",
+        "medical_specialty": "General Hospital",
+        "definition": "A liquid crystal vein location device is a device intended to detect and display the location of superficial veins beneath the skin by detecting temperature or optical contrast differences.",
+        "keywords": ["vein locator", "vein location", "vein visualization", "superficial veins", "near-infrared vein", "vein finder", "vein illumination", "vascular imaging", "venipuncture aid", "vein pattern", "vein projection"]
+    },
+    {
+        "product_code": "DQA",
+        "device_name": "Oximeter",
+        "device_class": "2",
+        "regulation_number": "870.2700",
+        "medical_specialty": "Cardiovascular",
+        "definition": "A device used to transmit radiation at a known wavelength through blood and to measure the blood oxygen saturation based on the amount of light absorbed.",
+        "keywords": ["oximeter", "pulse oximeter", "pulse oximetry", "spo2", "blood oxygen", "photoplethysmography", "ppg", "oxygen saturation", "hypoxia"]
     },
     {
         "product_code": "DXN",
@@ -648,6 +666,17 @@ CURATED_FDA_PRODUCT_CODES = [
     }
 ]
 
+MEDICAL_SYNONYM_CLUSTERS = [
+    {"ecg", "ekg", "electrocardiogram", "electrocardiograph", "electrocardiographic", "cardiac electrical", "cardiac rhythm", "arrhythmia"},
+    {"vein", "vein locator", "vein location", "vein visualization", "vein finder", "superficial veins", "venous visualization", "vein projection", "vein pattern"},
+    {"oximeter", "pulse oximeter", "pulse oximetry", "spo2", "blood oxygen", "photoplethysmography", "ppg", "oxygen saturation"},
+    {"blood pressure", "blood-pressure", "nibp", "sphygmomanometer", "systolic", "diastolic", "arterial pressure"},
+    {"glucose", "cgm", "continuous glucose", "blood glucose", "glucose monitor"},
+    {"infusion pump", "syringe pump", "volumetric pump", "intravenous pump", "iv pump"},
+    {"radiology", "triage software", "image processing", "ai triage", "computer assisted triage"},
+    {"near-infrared", "nir", "infrared light", "optical reflectance"}
+]
+
 # ==============================================================================
 # SECTION 5: AUTHORITATIVE FDA / openFDA REST API CLIENT
 # ==============================================================================
@@ -672,17 +701,21 @@ class OpenFDAClient:
 
     @classmethod
     def query_classification(cls, query_term: str, limit: int = 5) -> List[Dict[str, Any]]:
-        """Searches openFDA Device Classification database by device name or regulation description."""
-        sanitized = re.sub(r"[^a-zA-Z0-9\s]", "", query_term).strip()
+        """Searches openFDA Device Classification database by device name or keyword."""
+        sanitized = re.sub(r"[^a-zA-Z0-9\s]", " ", query_term).strip()
         if not sanitized:
             return []
         
-        search_query = f'device_name:"{sanitized}"+definition:"{sanitized}"'
+        words = [w for w in sanitized.split() if len(w) > 2]
+        if not words:
+            return []
+        
+        search_query = f'device_name:"{sanitized}"' if len(words) > 1 else f'device_name:{words[0]}'
         params = cls._get_params({"search": search_query, "limit": limit})
         url = f"{cls.BASE_URL}/classification.json"
         
         try:
-            with httpx.Client(timeout=8.0) as client:
+            with httpx.Client(timeout=6.0) as client:
                 resp = client.get(url, params=params, headers=cls._get_headers())
                 if resp.status_code == 200:
                     return resp.json().get("results", [])
@@ -797,7 +830,7 @@ def cached_openfda_safety(pcode: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     return OpenFDAClient.query_recalls(pcode), OpenFDAClient.query_maude_events(pcode)
 
 # ==============================================================================
-# SECTION 6: SEMANTIC CLASSIFICATION & MATCH SCORE ENGINE
+# SECTION 6: HYBRID SEMANTIC RETRIEVAL & VALIDATION ENGINE
 # ==============================================================================
 
 class SemanticMatcher:
@@ -806,39 +839,198 @@ class SemanticMatcher:
         return [w for w in re.split(r"\W+", text.lower()) if len(w) > 2]
 
     @classmethod
-    def compute_match_score(cls, query: str, catalog_entry: Dict[str, Any]) -> float:
-        query_tokens = set(cls.tokenize(query))
-        if not query_tokens:
-            return 0.0
+    def expand_query(cls, text: str) -> Tuple[List[str], List[str]]:
+        """Extracts search tokens and expands with verified medical synonym clusters."""
+        lower = text.lower()
+        tokens = set(cls.tokenize(lower))
+        phrases = []
         
-        name_tokens = cls.tokenize(catalog_entry.get("device_name", ""))
-        def_tokens = cls.tokenize(catalog_entry.get("definition", ""))
-        kw_tokens = set(catalog_entry.get("keywords", []))
+        for cluster in MEDICAL_SYNONYM_CLUSTERS:
+            matched_in_cluster = [term for term in cluster if term in lower]
+            if matched_in_cluster:
+                for term in cluster:
+                    phrases.append(term)
+                    for t in cls.tokenize(term):
+                        tokens.add(t)
+                        
+        return list(tokens), list(set(phrases))
+
+    @classmethod
+    def evaluate_specificity(cls, text: str) -> str:
+        """Evaluates whether the input is valid medical description, too vague, or non-medical."""
+        lower = text.lower().strip()
+        tokens = cls.tokenize(lower)
+        
+        non_med_keywords = [
+            "desk lamp", "household lamp", "table lamp", "living room", "kitchen appliance",
+            "coffee maker", "sofa", "vacuum cleaner", "toy car", "gaming console", "ceiling fan"
+        ]
+        if any(nm in lower for nm in non_med_keywords):
+            return "NON_MEDICAL"
+            
+        medical_signals = {
+            "cardiac", "heart", "ecg", "ekg", "electrocardiogram", "electrocardiograph", "electrode", "electrodes",
+            "vein", "veins", "vascular", "blood", "oxygen", "spo2", "oximeter", "glucose", "pressure", "infusion",
+            "radiology", "imaging", "triage", "ct", "mri", "xray", "ultrasound", "sensor", "photoplethysmography",
+            "pulse", "respiratory", "pulmonary", "neurological", "eeg", "dialysis", "catheter", "arrhythmia"
+        }
+        
+        has_medical_signal = any(sig in lower for sig in medical_signals)
+        generic_tokens = {"device", "electronic", "hospital", "patient", "patients", "used", "small", "portable", "monitor", "system", "clinical", "hospitals", "with", "that", "and", "for"}
+        distinctive = [t for t in tokens if t not in generic_tokens]
+        
+        if not has_medical_signal:
+            if len(distinctive) <= 2:
+                return "TOO_VAGUE"
+            return "NON_MEDICAL"
+            
+        if len(distinctive) <= 1:
+            return "TOO_VAGUE"
+            
+        return "VALID"
+
+    @classmethod
+    def search_openfda_classification(cls, phrases: List[str], tokens: List[str]) -> List[Dict[str, Any]]:
+        """Searches live openFDA classification endpoint using expanded medical terms."""
+        candidates = []
+        seen_codes = set()
+        
+        query_candidates = []
+        for p in phrases[:4]:
+            if len(p.split()) > 1:
+                query_candidates.append(f'device_name:"{p}"')
+            else:
+                query_candidates.append(f'device_name:{p}')
+                
+        if len(query_candidates) < 2:
+            key_tokens = [t for t in tokens if t in {"electrocardiograph", "oximeter", "vein", "sphygmomanometer", "glucose", "infusion", "triage"}][:2]
+            for kt in key_tokens:
+                query_candidates.append(f'device_name:{kt}')
+                
+        client = httpx.Client(timeout=6.0)
+        for q in query_candidates[:4]:
+            url = f"https://api.fda.gov/device/classification.json?search={q}&limit=5"
+            try:
+                resp = client.get(url, headers={"User-Agent": "ReIVE/1.0"})
+                if resp.status_code == 200:
+                    results = resp.json().get("results", [])
+                    for r in results:
+                        pcode = r.get("product_code", "").strip().upper()
+                        if pcode and len(pcode) == 3 and pcode not in seen_codes:
+                            seen_codes.add(pcode)
+                            candidates.append({
+                                "product_code": pcode,
+                                "device_name": r.get("device_name", "Medical Device"),
+                                "device_class": r.get("device_class", "2"),
+                                "regulation_number": r.get("regulation_number", "Unclassified"),
+                                "medical_specialty": r.get("medical_specialty_description", "General"),
+                                "definition": r.get("definition", f"Authoritative openFDA classification record under 21 CFR {r.get('regulation_number', '')}."),
+                                "keywords": cls.tokenize(r.get("device_name", "") + " " + r.get("definition", ""))
+                            })
+            except Exception:
+                pass
+                
+        return candidates
+
+    @classmethod
+    def compute_match_score(cls, query: str, catalog_entry: Dict[str, Any]) -> float:
+        """Computes deterministic relevance score across name, definition, and expanded synonym clusters."""
+        if not query.strip():
+            return 0.0
+            
+        expanded_tokens, expanded_phrases = cls.expand_query(query)
+        q_lower = query.lower()
+        dname_lower = catalog_entry.get("device_name", "").lower()
+        def_lower = catalog_entry.get("definition", "").lower()
+        keywords = set(k.lower() for k in catalog_entry.get("keywords", []))
+        
+        dname_tokens = set(cls.tokenize(dname_lower))
+        def_tokens = set(cls.tokenize(def_lower))
+        q_tokens = set(expanded_tokens)
         
         score = 0.0
-        for kw in kw_tokens:
-            if kw.lower() in query.lower():
+        
+        # 1. Exact phrase or synonym cluster overlap
+        for phrase in expanded_phrases:
+            if phrase in dname_lower:
+                score += 45.0
+                break
+            elif phrase in def_lower:
+                score += 25.0
+                break
+            elif any(phrase in kw for kw in keywords):
                 score += 35.0
-        
-        name_inter = query_tokens.intersection(set(name_tokens))
-        score += (len(name_inter) / max(len(name_tokens), 1)) * 40.0
-        
-        def_inter = query_tokens.intersection(set(def_tokens))
-        score += (len(def_inter) / max(len(def_tokens), 1)) * 25.0
-        
+                break
+                
+        # Direct keyword check
+        for kw in keywords:
+            if kw in q_lower:
+                score += 25.0
+                break
+
+        # 2. Name token overlap
+        if dname_tokens:
+            name_inter = q_tokens.intersection(dname_tokens)
+            score += (len(name_inter) / len(dname_tokens)) * 35.0
+            
+        # 3. Definition token overlap
+        if def_tokens:
+            def_inter = q_tokens.intersection(def_tokens)
+            score += (len(def_inter) / min(len(def_tokens), 20)) * 20.0
+            
         return min(round(score, 1), 99.0)
 
     @classmethod
     def rank_product_codes(cls, user_query: str, top_k: int = 4) -> List[Dict[str, Any]]:
-        results = []
+        status, results = cls.match_product_codes(user_query, top_k=top_k)
+        return results
+
+    @classmethod
+    def match_product_codes(cls, user_query: str, top_k: int = 4) -> Tuple[str, List[Dict[str, Any]]]:
+        """
+        Executes hybrid candidate generation, query expansion, openFDA live discovery, and reranking.
+        Returns: (status, candidates)
+        """
+        specificity = cls.evaluate_specificity(user_query)
+        if specificity == "TOO_VAGUE":
+            return "TOO_VAGUE", []
+        elif specificity == "NON_MEDICAL":
+            return "NON_MEDICAL", []
+            
+        expanded_tokens, expanded_phrases = cls.expand_query(user_query)
+        
+        pool_dict = {}
         for entry in CURATED_FDA_PRODUCT_CODES:
+            pool_dict[entry["product_code"]] = entry.copy()
+            
+        # Live openFDA discovery
+        openfda_records = cls.search_openfda_classification(expanded_phrases, expanded_tokens)
+        for entry in openfda_records:
+            pcode = entry["product_code"]
+            if pcode not in pool_dict:
+                pool_dict[pcode] = entry.copy()
+                
+        scored_candidates = []
+        for pcode, entry in pool_dict.items():
             score = cls.compute_match_score(user_query, entry)
-            if score > 15.0:
+            if score >= 15.0:
                 item = entry.copy()
                 item["match_score"] = score
-                results.append(item)
-        results.sort(key=lambda x: x["match_score"], reverse=True)
-        return results[:top_k]
+                if score >= 65.0:
+                    item["relevance_tier"] = "High relevance"
+                elif score >= 35.0:
+                    item["relevance_tier"] = "Moderate relevance"
+                else:
+                    item["relevance_tier"] = "Low relevance"
+                scored_candidates.append(item)
+                
+        scored_candidates.sort(key=lambda x: x["match_score"], reverse=True)
+        top_results = scored_candidates[:top_k]
+        
+        if not top_results:
+            return "NO_MATCH", []
+            
+        return "SUCCESS", top_results
 
 # ==============================================================================
 # SECTION 7: LLM CONCEPT EXTRACTION & GROUNDED SYNTHESIS ENGINE
@@ -1355,23 +1547,16 @@ def view_new_analysis():
         
         with st.spinner("Extracting regulatory concepts & querying authoritative openFDA databases..."):
             concepts = LLMEngine.extract_structured_concepts(clean_desc, clean_use, clean_tech)
-            matched_codes = SemanticMatcher.rank_product_codes(f"{clean_desc} {clean_use} {clean_tech}")
+            search_query = f"{clean_desc} {clean_use} {clean_tech}"
+            status, matched_codes = SemanticMatcher.match_product_codes(search_query, top_k=4)
             
-            if not matched_codes or matched_codes[0]["match_score"] < 25.0:
-                live_fda_results = OpenFDAClient.query_classification(description[:60])
-                if live_fda_results:
-                    first = live_fda_results[0]
-                    matched_codes.insert(0, {
-                        "product_code": first.get("product_code", "UNK"),
-                        "device_name": first.get("device_name", "Unknown Device"),
-                        "device_class": first.get("device_class", "2"),
-                        "regulation_number": first.get("regulation_number", "Unclassified"),
-                        "medical_specialty": first.get("medical_specialty_description", "General"),
-                        "definition": first.get("definition", "Official openFDA classification record."),
-                        "match_score": 75.0
-                    })
-            
-            if not matched_codes:
+            if status == "TOO_VAGUE":
+                st.warning("⚠️ **Insufficient Specificity:** Insufficient specificity for reliable product-code identification. Please refine your description by adding the device's primary clinical function, measurement, intended use, or technology.")
+                return
+            elif status == "NON_MEDICAL":
+                st.warning("ℹ️ **Non-Medical / Unregulated Product:** No reliable medical-device classification match identified for this description. The input does not appear to describe an FDA-regulated medical device.")
+                return
+            elif status == "NO_MATCH" or not matched_codes:
                 st.warning("No reliable product-code match identified for this description. Please refine your search terms.")
                 return
             
@@ -1413,10 +1598,16 @@ def view_new_analysis():
         # TAB 1: CLASSIFICATION CANDIDATES
         with tab1:
             st.markdown("##### Candidate FDA Product Codes")
-            st.caption("Ranked by deterministic token overlap and semantic relevance against the official FDA Classification database.")
+            st.caption("Ranked by deterministic token overlap, expanded medical synonym clusters, and semantic relevance against the official FDA Classification database.")
             codes = active.get("classification_results", [])
+            
+            # Low confidence disclaimer if top candidate has low relevance
+            if codes and codes[0].get("relevance_tier") == "Low relevance":
+                st.info("ℹ️ **Relevance Notice:** Potential match identified, but relevance confidence is limited. Professional verification against primary FDA guidance is recommended.")
+                
             for c in codes:
                 score = c.get("match_score", 0.0)
+                tier = c.get("relevance_tier", "Moderate relevance")
                 pcode = c.get("product_code", "N/A")
                 dname = c.get("device_name", "N/A")
                 dclass = c.get("device_class", "2")
@@ -1428,7 +1619,7 @@ def view_new_analysis():
                     f"<div class='reg-card'>"
                     f"<div class='reg-card-header'>"
                     f"<div><span class='badge-pcode'>{pcode}</span> <strong style='color:#f8fafc; margin-left:0.3rem;'>{dname}</strong> <span class='badge-class' style='margin-left:0.3rem;'>Class {dclass}</span></div>"
-                    f"<span class='badge-score'>MATCH SCORE: {score}%</span>"
+                    f"<span class='badge-score'>{tier.upper()} · {score}%</span>"
                     f"</div>"
                     f"<div style='font-size:0.85rem; color:#cbd5e1;'><strong>21 CFR Regulation:</strong> 21 CFR {regnum} &nbsp;|&nbsp; <strong>Advisory Panel:</strong> {specialty}</div>"
                     f"<div style='margin-top:0.4rem; font-size:0.85rem; color:#94a3b8;'><strong>FDA Definition:</strong> {definition}</div>"
